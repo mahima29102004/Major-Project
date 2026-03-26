@@ -1,0 +1,193 @@
+# ── AUC Calculation ──────────────────────────────────────────────
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import (
+    roc_auc_score,
+    roc_curve,
+    average_precision_score,
+    precision_recall_curve
+)
+from tqdm import tqdm
+
+print("="*55)
+print("AUC EVALUATION")
+print("="*55)
+
+# ── Collect scores and labels for all test users ───────────────
+all_scores = []
+all_labels = []
+user_aucs  = []
+user_aps   = []
+
+skipped = 0
+for uid in tqdm(TEST_EVAL, desc="Computing AUC"):
+    cands = get_candidates_test(uid)
+    gt    = GT_test.get(uid, [])
+    if not gt: continue
+
+    # Add GT items to candidates
+    all_cands = list(set(cands) | set(gt))
+    labels    = [1 if item in set(gt) else 0
+                 for item in all_cands]
+
+    # Skip if no positive or all positive
+    if sum(labels) == 0 or sum(labels) == len(labels):
+        skipped += 1
+        continue
+
+    X_user = np.array([extract_features(uid, item)
+                       for item in all_cands],
+                      dtype=np.float32)
+    scores = lgb_model.predict(X_user)
+
+    # Per-user AUC
+    try:
+        user_auc = roc_auc_score(labels, scores)
+        user_ap  = average_precision_score(labels, scores)
+        user_aucs.append(user_auc)
+        user_aps.append(user_ap)
+
+        # Collect for global AUC
+        all_scores.extend(scores.tolist())
+        all_labels.extend(labels)
+    except:
+        skipped += 1
+
+all_scores = np.array(all_scores)
+all_labels = np.array(all_labels)
+
+# ── Global AUC ────────────────────────────────────────────────
+global_auc = roc_auc_score(all_labels, all_scores)
+global_ap  = average_precision_score(all_labels, all_scores)
+mean_auc   = np.mean(user_aucs)
+mean_ap    = np.mean(user_aps)
+
+print(f"\n{'='*50}")
+print(f"  AUC RESULTS")
+print(f"{'='*50}")
+print(f"  Global AUC (ROC)     : {global_auc:.4f}")
+print(f"  Mean User AUC        : {mean_auc:.4f}")
+print(f"  Global AP (PR-AUC)   : {global_ap:.4f}")
+print(f"  Mean User AP         : {mean_ap:.4f}")
+print(f"  Users evaluated      : {len(user_aucs):,}")
+print(f"  Users skipped        : {skipped:,}")
+print(f"{'='*50}")
+
+# ── AUC interpretation ─────────────────────────────────────────
+print(f"\n📊 AUC Interpretation:")
+print(f"{'='*50}")
+for auc_val, label in [
+    (global_auc, "Our Model (Global AUC)"),
+    (0.50,       "Random baseline"),
+    (0.70,       "Acceptable threshold"),
+    (0.80,       "Good threshold"),
+    (0.90,       "Excellent threshold"),
+    (1.00,       "Perfect classifier")
+]:
+    marker = "◄ OUR MODEL" if label.startswith("Our") else ""
+    print(f"  {auc_val:.2f}  —  {label} {marker}")
+print(f"{'='*50}")
+
+# ── Per-tier AUC ───────────────────────────────────────────────
+print(f"\n📊 AUC by User Activity Tier:")
+print(f"{'='*40}")
+tier_aucs = {'sparse':[], 'moderate':[], 'active':[]}
+for uid in tqdm(TEST_EVAL[:500], desc="Tier AUC"):
+    cands  = get_candidates_test(uid)
+    gt     = GT_test.get(uid, [])
+    if not gt: continue
+    all_cands = list(set(cands) | set(gt))
+    labels    = [1 if item in set(gt) else 0
+                 for item in all_cands]
+    if sum(labels)==0 or sum(labels)==len(labels): continue
+    X_user = np.array([extract_features(uid, item)
+                       for item in all_cands],
+                      dtype=np.float32)
+    scores = lgb_model.predict(X_user)
+    try:
+        auc = roc_auc_score(labels, scores)
+        t   = user_tier.get(uid, 'sparse')
+        tier_aucs[t].append(auc)
+    except: pass
+
+for tier in ['sparse','moderate','active']:
+    vals = tier_aucs[tier]
+    mean = np.mean(vals) if vals else 0
+    print(f"  {tier:<12}: AUC={mean:.4f}  ({len(vals):,} users)")
+print(f"{'='*40}")
+
+# ── Plots ──────────────────────────────────────────────────────
+fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+fig.suptitle('AUC Analysis — Taobao Recommendation',
+             fontsize=14, fontweight='bold')
+
+# Plot 1: ROC Curve
+ax1 = axes[0]
+fpr, tpr, _ = roc_curve(all_labels, all_scores)
+ax1.plot(fpr, tpr, color='#E53935', linewidth=2,
+         label=f'Our Model (AUC={global_auc:.4f})')
+ax1.plot([0,1],[0,1], 'k--', linewidth=1,
+         label='Random (AUC=0.50)')
+ax1.fill_between(fpr, tpr, alpha=0.1, color='#E53935')
+ax1.set_xlabel('False Positive Rate', fontsize=12)
+ax1.set_ylabel('True Positive Rate', fontsize=12)
+ax1.set_title('ROC Curve', fontsize=12, fontweight='bold')
+ax1.legend(fontsize=10)
+ax1.grid(True, alpha=0.3)
+
+# Plot 2: Precision-Recall Curve
+ax2 = axes[1]
+prec, rec, _ = precision_recall_curve(all_labels, all_scores)
+ax2.plot(rec, prec, color='#1E88E5', linewidth=2,
+         label=f'Our Model (AP={global_ap:.4f})')
+ax2.axhline(y=all_labels.mean(), color='k', linestyle='--',
+            linewidth=1, label=f'Baseline (AP={all_labels.mean():.4f})')
+ax2.fill_between(rec, prec, alpha=0.1, color='#1E88E5')
+ax2.set_xlabel('Recall', fontsize=12)
+ax2.set_ylabel('Precision', fontsize=12)
+ax2.set_title('Precision-Recall Curve',
+              fontsize=12, fontweight='bold')
+ax2.legend(fontsize=10)
+ax2.grid(True, alpha=0.3)
+
+# Plot 3: User AUC distribution
+ax3 = axes[2]
+ax3.hist(user_aucs, bins=30, color='#43A047',
+         edgecolor='white', linewidth=0.5)
+ax3.axvline(x=mean_auc, color='#E53935',
+            linestyle='--', linewidth=2,
+            label=f'Mean AUC={mean_auc:.4f}')
+ax3.axvline(x=0.5, color='gray',
+            linestyle=':', linewidth=1.5,
+            label='Random=0.50')
+ax3.set_xlabel('AUC Score', fontsize=12)
+ax3.set_ylabel('Number of Users', fontsize=12)
+ax3.set_title('Per-User AUC Distribution',
+              fontsize=12, fontweight='bold')
+ax3.legend(fontsize=10)
+ax3.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('auc_analysis.png', dpi=120, bbox_inches='tight')
+plt.show()
+
+# ── Complete metrics summary ───────────────────────────────────
+print(f"\n{'='*58}")
+print(f"  COMPLETE METRICS SUMMARY")
+print(f"{'='*58}")
+print(f"  {'Metric':<25} {'Value':>10}")
+print(f"  {'-'*37}")
+print(f"  {'Precision@10':<25} {np.mean(results[10]['precision']):>10.4f}")
+print(f"  {'Recall@10':<25} {np.mean(results[10]['recall']):>10.4f}")
+print(f"  {'NDCG@10':<25} {np.mean(results[10]['ndcg']):>10.4f}")
+print(f"  {'MAP@10':<25} {np.mean(results[10]['map']):>10.4f}")
+print(f"  {'AUC (ROC)':<25} {global_auc:>10.4f}")
+print(f"  {'AUC (PR / Avg Precision)':<25} {global_ap:>10.4f}")
+print(f"  {'Mean User AUC':<25} {mean_auc:>10.4f}")
+print(f"  {'NDCG@5 (val)':<25} "
+      f"{lgb_model.best_score['val']['ndcg@5']:>10.4f}")
+print(f"  {'NDCG@10 (val)':<25} "
+      f"{lgb_model.best_score['val']['ndcg@10']:>10.4f}")
+print(f"{'='*58}")
+print(f"\n✅ AUC calculation complete!")
+print(f"✅ Plot saved: auc_analysis.png")
