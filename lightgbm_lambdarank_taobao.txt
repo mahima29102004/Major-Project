@@ -1,0 +1,99 @@
+# ── STEP 9: LightGBM LambdaRank Training ────────────────────────
+import lightgbm as lgb
+import pandas as pd
+import numpy as np
+import time
+
+# ── Create LightGBM datasets ───────────────────────────────────
+print("⏳ Creating LightGBM datasets...")
+lgb_train = lgb.Dataset(
+    X_train,
+    label         = y_train,
+    group         = groups_train,
+    feature_name  = FEATURE_NAMES,
+    free_raw_data = False
+)
+lgb_val = lgb.Dataset(
+    X_val,
+    label         = y_val,
+    group         = groups_val,
+    feature_name  = FEATURE_NAMES,
+    reference     = lgb_train,
+    free_raw_data = False
+)
+print("✅ Datasets created!")
+
+# ── Parameters (paper Section 5.3) ────────────────────────────
+params = {
+    'objective'        : 'lambdarank',
+    'metric'           : 'ndcg',
+    'ndcg_eval_at'     : [5, 10],
+    'learning_rate'    : 0.05,
+    'num_leaves'       : 31,
+    'max_depth'        : 8,
+    'min_data_in_leaf' : 10,
+    'feature_fraction' : 0.8,
+    'bagging_fraction' : 0.8,
+    'bagging_freq'     : 5,
+    'lambda_l1'        : 0.1,
+    'lambda_l2'        : 0.1,
+    'verbose'          : -1,
+    'seed'             : 42,
+    'num_threads'      : 2
+}
+
+print(f"\n📋 Parameters:")
+for k,v in params.items():
+    if k != 'verbose':
+        print(f"   {k:<22}: {v}")
+
+# ── Train ──────────────────────────────────────────────────────
+print(f"\n⏳ Training LightGBM LambdaRank (300 rounds)...")
+callbacks = [
+    lgb.early_stopping(stopping_rounds=30, verbose=False),
+    lgb.log_evaluation(period=50)
+]
+
+start = time.time()
+lgb_model = lgb.train(
+    params,
+    lgb_train,
+    num_boost_round = 300,
+    valid_sets      = [lgb_val],
+    valid_names     = ['val'],
+    callbacks       = callbacks
+)
+elapsed = time.time() - start
+
+# ── Results ────────────────────────────────────────────────────
+print(f"\n{'='*50}")
+print(f"  TRAINING COMPLETE")
+print(f"{'='*50}")
+print(f"  Time             : {elapsed:.1f}s ({elapsed/60:.1f} mins)")
+print(f"  Best iteration   : {lgb_model.best_iteration}")
+print(f"  Best NDCG@5      : "
+      f"{lgb_model.best_score['val']['ndcg@5']:.4f}")
+print(f"  Best NDCG@10     : "
+      f"{lgb_model.best_score['val']['ndcg@10']:.4f}")
+print(f"{'='*50}")
+
+# ── Feature importance ─────────────────────────────────────────
+feat_imp = pd.DataFrame({
+    'feature'   : FEATURE_NAMES,
+    'importance': lgb_model.feature_importance(
+                    importance_type='split')
+}).sort_values('importance', ascending=False)
+
+total = feat_imp['importance'].sum()
+print(f"\n📊 Feature Importance (Split-Gain):")
+print(f"{'='*45}")
+for _, row in feat_imp.iterrows():
+    pct = row['importance']/total*100
+    bar = '█' * int(pct/2)
+    print(f"  {row['feature']:<20}: {pct:5.1f}%  {bar}")
+print(f"{'='*45}")
+
+# ── Save ───────────────────────────────────────────────────────
+lgb_model.save_model('lightgbm_lambdarank_taobao.txt')
+print(f"\n✅ Model saved: lightgbm_lambdarank_taobao.txt")
+print(f"✅ Training complete!")

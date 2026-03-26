@@ -1,0 +1,10 @@
+# ── Download exact Taobao dataset from Kaggle ───────────────────
+import os, zipfile
+
+# Step 1: Download
+print("⬇️  Downloading Taobao UserBehavior dataset...")
+!kaggle datasets download -d marwa80/userbehavior -p /content/taobao/
+
+# Step 2: Check downloaded files
+print("\n📦 Downloaded files:")
+!ls -lh /content/taobao/
